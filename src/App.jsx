@@ -89,12 +89,10 @@ export default function App() {
   /* ------------------------------------------------------------------ */
   /* COMBINED TRANSACTIONS (Fix for Instant Mobile Update)              */
   /* ------------------------------------------------------------------ */
-  // Ithu thaa main fix. DB la iruka data + local pending data va serthu UI ku anuppudhu
   const displayTransactions = useMemo(() => {
     const pendingWithFlags = pendingSync.map(t => ({ ...t, id: t.clientId || genId(), isPending: true }));
     return [...transactions, ...pendingWithFlags];
   }, [transactions, pendingSync]);
-
 
   const showError = (msg) => {
     setErrorMsg(msg);
@@ -254,7 +252,7 @@ export default function App() {
       amount: parseFloat(expAmount),
       method: expMethod,
       date: new Date().toISOString().split('T')[0],
-      clientId: genId(), // Needed for offline tracking
+      clientId: genId(), 
     };
 
     if (!isOnline) {
@@ -291,7 +289,6 @@ export default function App() {
   const handleDeleteTransaction = async (id, isPendingItem = false) => {
     if (!window.confirm('Delete this transaction? This cannot be undone.')) return;
     
-    // Offline / Pending data delete pannum pothu
     if (isPendingItem) {
       const newPending = pendingSync.filter(t => t.clientId !== id && t.id !== id);
       savePendingSync(newPending);
@@ -465,7 +462,7 @@ export default function App() {
   }, [displayTransactions, accounts]);
 
   /* ------------------------------------------------------------------ */
-  /* QR SYNC LOGIC                                                      */
+  /* QR SYNC LOGIC & DIRECT NETWORK SYNC                                */
   /* ------------------------------------------------------------------ */
 
   const qrChunks = useMemo(() => {
@@ -489,7 +486,6 @@ export default function App() {
   const currentQrPayload = qrChunks[chunkIndex] ? JSON.stringify(qrChunks[chunkIndex]) : '';
 
   const snapshotChunks = useMemo(() => {
-    // We only send DB transactions via snapshot, NOT pending local items
     if (transactions.length === 0) return [];
     const chunks = [];
     for (let i = 0; i < transactions.length; i += SNAPSHOT_CHUNK_SIZE) {
@@ -551,6 +547,7 @@ export default function App() {
     setScanMessage('⚠️ That QR code is not an X-Tracker code.');
   }, []);
 
+  // Updated Scanner Config: Full screen without box + higher FPS
   const startScanner = useCallback(async () => {
     setScanMessage('');
     setIsScannerOpen(true);
@@ -560,7 +557,7 @@ export default function App() {
         scannerRef.current = scanner;
         await scanner.start(
           { facingMode: 'environment' }, 
-          { fps: 10, qrbox: { width: 200, height: 200 } },
+          { fps: 15 }, // Removed qrbox, increased FPS for better detection
           (decodedText) => handleDecodedText(decodedText),
           () => {} 
         );
@@ -593,6 +590,38 @@ export default function App() {
       setExpectedChunkTotal(null);
       setScanMessage(`🎉 Imported ${result.insertedCount} entries${result.skippedCount ? `, skipped ${result.skippedCount} duplicate(s)` : ''}.`);
       await stopScanner();
+    } catch (err) {
+      showError(err.message);
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  // --- DIRECT WI-FI SYNC FUNCTION ---
+  const handleNetworkSync = async () => {
+    if (pendingSync.length === 0) return;
+    
+    if (!isOnline) {
+      showError("Backend offline la irukku. Mobile-um Laptop-um same Wi-Fi la irukka nu check pannunga.");
+      return;
+    }
+
+    setIsImporting(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/transactions/bulk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: pendingSync }),
+      });
+      
+      if (!res.ok) throw new Error((await res.json()).error || 'Failed to sync via Wi-Fi');
+      
+      const result = await res.json();
+      await fetchTransactions(); 
+      savePendingSync([]); 
+      setChunkIndex(0);
+      
+      showError(`🎉 Success! ${result.insertedCount} entries synced directly via Wi-Fi.`);
     } catch (err) {
       showError(err.message);
     } finally {
@@ -1051,16 +1080,15 @@ export default function App() {
             </div>
           )}
 
-          {/* --- QR SYNC TAB --- */}
+         {/* --- QR SYNC TAB --- */}
           {activeTab === 'sync' && (
             <div className="max-w-6xl mx-auto space-y-6 md:space-y-8 animate-in fade-in duration-500 slide-in-from-bottom-4">
 
               <GlassCard className="border-t-4 border-t-violet-500">
                 <p className="text-slate-300 text-xs md:text-sm leading-relaxed">
-                  Two things happen here. Use <span className="text-white font-bold">Generate QR (Phone)</span> on your phone to hand over
-                  offline-added expenses/revenue to the laptop. Use <span className="text-white font-bold">Send Latest Data to Phone</span> on
-                  the laptop to push the current DB data to your phone so it can be viewed offline. Both sides scan with
-                  the same <span className="text-white font-bold">Scan &amp; Import</span> camera.
+                  Two things happen here. Use <span className="text-white font-bold">Phone to Laptop</span> to send offline-added expenses/revenue to the laptop. 
+                  Use <span className="text-white font-bold">Laptop to Phone</span> to pull the current DB data to your phone so it can be viewed offline.
+                  If both devices are on the same Wi-Fi, simply use the <span className="text-white font-bold">Same Network Sync</span> buttons!
                 </p>
               </GlassCard>
 
@@ -1069,7 +1097,7 @@ export default function App() {
                 {/* --- GENERATE PENDING ENTRIES --- */}
                 <GlassCard className="border-t-4 border-t-amber-500">
                   <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 md:mb-6 gap-3">
-                    <h3 className="text-lg md:text-xl font-bold text-white flex items-center gap-2"><QrCode size={22} className="text-amber-400"/> Generate QR (Phone)</h3>
+                    <h3 className="text-lg md:text-xl font-bold text-white flex items-center gap-2"><QrCode size={22} className="text-amber-400"/> Phone to Laptop</h3>
                     {pendingSync.length > 0 && (
                       <span className="px-2 md:px-3 py-1 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-full text-[10px] md:text-xs font-bold whitespace-nowrap">
                         {pendingSync.length} entr{pendingSync.length === 1 ? 'y' : 'ies'} waiting
@@ -1078,14 +1106,14 @@ export default function App() {
                   </div>
 
                   {pendingSync.length === 0 ? (
-                    <div className="text-center py-8 md:py-10">
+                    <div className="text-center py-6">
                       <CheckCircle2 className="mx-auto text-emerald-400 mb-3" size={36} />
-                      <p className="text-slate-400 font-medium text-xs md:text-sm">Nothing pending. Entries added while offline will appear here automatically.</p>
+                      <p className="text-slate-400 font-medium text-xs md:text-sm">Nothing pending. Entries added while offline will appear here.</p>
                     </div>
                   ) : (
-                    <div className="space-y-4 md:space-y-5">
+                    <div className="space-y-4 md:space-y-5 mb-5">
                       <div className="flex justify-center bg-white p-4 md:p-5 rounded-2xl w-full">
-                        <QRCodeSVG value={currentQrPayload} size={250} style={{ width: "100%", height: "auto", maxWidth: "300px" }} level="L" includeMargin={true} />
+                        <QRCodeSVG value={currentQrPayload} size={350} style={{ width: "100%", height: "auto", maxWidth: "450px" }} level="L" includeMargin={true} />
                       </div>
 
                       {qrChunks.length > 1 && (
@@ -1095,16 +1123,39 @@ export default function App() {
                           <button onClick={() => setChunkIndex(i => Math.min(qrChunks.length - 1, i + 1))} disabled={chunkIndex === qrChunks.length - 1} className="p-2 md:p-2.5 rounded-xl bg-slate-800 border border-white/10 text-slate-300 disabled:opacity-30 hover:bg-slate-700 transition-all"><ChevronRight size={18} /></button>
                         </div>
                       )}
-
                       <p className="text-[10px] md:text-xs text-slate-500 text-center">
-                        {qrChunks.length > 1 ? 'Show each page to the laptop scanner one by one, in order.' : 'Show this to the laptop webcam scanner.'}
+                        Use QR Scanner on Laptop if Wi-Fi sync is unavailable.
                       </p>
-
-                      <button onClick={clearAllPendingSync} className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-bold text-xs md:text-sm transition-all border border-white/5 flex items-center justify-center gap-2">
-                        <Trash2 size={16} /> Mark as Synced & Clear
-                      </button>
                     </div>
                   )}
+
+                  {/* Same Network Sync Block (Phone -> Laptop) */}
+                  <div className="space-y-3 border-t border-white/10 pt-5 mt-2">
+                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Same Network Sync</h4>
+                    <button 
+                      onClick={handleNetworkSync} 
+                      disabled={!isOnline || isImporting || pendingSync.length === 0}
+                      className="w-full py-3.5 bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-400 hover:to-indigo-400 text-white rounded-xl font-bold text-sm transition-all shadow-[0_0_15px_rgba(59,130,246,0.4)] flex justify-center items-center gap-2 disabled:opacity-50 disabled:shadow-none"
+                    >
+                      {isImporting ? <Loader2 size={18} className="animate-spin" /> : <Wifi size={18} />}
+                      {isImporting ? 'Syncing...' : 'Push Data to Laptop via Wi-Fi'}
+                    </button>
+                    
+                    {!isOnline && pendingSync.length > 0 && (
+                      <p className="text-[10px] text-amber-400 text-center">
+                        Connect your phone to the laptop's Wi-Fi network to use direct sync.
+                      </p>
+                    )}
+
+                    {pendingSync.length > 0 && (
+                      <button 
+                        onClick={clearAllPendingSync} 
+                        className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-bold text-xs md:text-sm transition-all border border-white/5 flex items-center justify-center gap-2 mt-2"
+                      >
+                        <Trash2 size={16} /> Mark as Synced & Clear
+                      </button>
+                    )}
+                  </div>
                 </GlassCard>
 
                 {/* --- SCANNER --- */}
@@ -1161,15 +1212,18 @@ export default function App() {
 
               {/* --- GENERATE SNAPSHOT --- */}
               <GlassCard className="border-t-4 border-t-teal-500">
-                <h3 className="text-lg md:text-xl font-bold text-white mb-4 md:mb-6 flex items-center gap-2">
-                  <QrCode size={22} className="text-teal-400"/> Send Latest Data to Phone
-                </h3>
+                <div className="flex items-center justify-between mb-4 md:mb-6">
+                  <h3 className="text-lg md:text-xl font-bold text-white flex items-center gap-2">
+                    <QrCode size={22} className="text-teal-400"/> Laptop to Phone Data
+                  </h3>
+                </div>
+                
                 {transactions.length === 0 ? (
-                  <p className="text-slate-400 text-xs md:text-sm">No DB data yet to send.</p>
+                  <p className="text-slate-400 text-xs md:text-sm mb-5">No DB data yet to send.</p>
                 ) : (
-                  <div className="space-y-4 md:space-y-5 max-w-md mx-auto">
+                  <div className="space-y-4 md:space-y-5 max-w-md mx-auto mb-5">
                     <div className="flex justify-center bg-white p-4 md:p-5 rounded-2xl w-full">
-                      <QRCodeSVG value={currentSnapshotQrPayload} size={250} style={{ width: "100%", height: "auto", maxWidth: "300px" }} level="L" includeMargin={true} />
+                      <QRCodeSVG value={currentSnapshotQrPayload} size={350} style={{ width: "100%", height: "auto", maxWidth: "450px" }} level="L" includeMargin={true} />
                     </div>
                     {snapshotChunks.length > 1 && (
                       <div className="flex items-center justify-between">
@@ -1179,10 +1233,28 @@ export default function App() {
                       </div>
                     )}
                     <p className="text-[10px] md:text-xs text-slate-500 text-center">
-                      {snapshotChunks.length > 1 ? 'Open QR Sync on your phone and scan each page in order.' : 'Scan this with your phone to update its offline copy.'}
+                      Use phone scanner to capture data for offline viewing.
                     </p>
                   </div>
                 )}
+
+                {/* Same Network Fetch Block (Laptop -> Phone) */}
+                <div className="space-y-3 border-t border-white/10 pt-5 mt-2 max-w-md mx-auto">
+                  <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Same Network Sync</h4>
+                  <button 
+                    onClick={() => {
+                      loadAllData();
+                      showError("Latest data fetched from Laptop successfully!");
+                    }} 
+                    disabled={!isOnline}
+                    className="w-full py-3.5 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 text-white rounded-xl font-bold text-sm transition-all shadow-[0_0_15px_rgba(20,184,166,0.4)] flex justify-center items-center gap-2 disabled:opacity-50 disabled:shadow-none"
+                  >
+                    <RefreshCw size={18} /> Fetch Latest Data via Wi-Fi
+                  </button>
+                  <p className="text-[10px] md:text-xs text-slate-500 text-center">
+                    Click this on your phone if you are connected to the same Wi-Fi. (No QR needed)
+                  </p>
+                </div>
               </GlassCard>
             </div>
           )}
