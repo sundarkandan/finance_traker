@@ -1,15 +1,14 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
-import { Wallet, TrendingUp, TrendingDown, Plus, Minus, CreditCard, Filter, PieChart, Receipt, DollarSign, Menu, Sparkles, X, Trash2, Loader2, AlertTriangle, QrCode, Camera, Wifi, WifiOff, RefreshCw, CheckCircle2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Wallet, TrendingUp, TrendingDown, Plus, Minus, CreditCard, Filter, PieChart, Receipt, DollarSign, Menu, Sparkles, X, Trash2, Loader2, AlertTriangle, QrCode, Camera, Wifi, WifiOff, RefreshCw, CheckCircle2, ChevronLeft, ChevronRight, Settings } from 'lucide-react';
 import { format, isSameMonth, isSameYear, isSameDay } from 'date-fns';
 import { QRCodeSVG } from 'qrcode.react';
 import { Html5Qrcode } from 'html5-qrcode';
-
-const API_BASE_URL = `http://${window.location.hostname}:5000/api`;
 
 // --- QR SYNC CONSTANTS ---
 const PENDING_KEY = 'xtracker_pending_sync';   
 const ACCOUNTS_CACHE_KEY = 'xtracker_accounts_cache'; 
 const SNAPSHOT_KEY = 'xtracker_offline_snapshot'; 
+const API_URL_KEY = 'xtracker_api_url'; 
 const QR_CHUNK_SIZE = 1;                       
 const SNAPSHOT_CHUNK_SIZE = 1;                 
 const HEALTH_CHECK_INTERVAL_MS = 15000;        
@@ -24,18 +23,14 @@ const loadPending = () => {
   try {
     const raw = localStorage.getItem(PENDING_KEY);
     return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 };
 
 const loadCachedAccounts = () => {
   try {
     const raw = localStorage.getItem(ACCOUNTS_CACHE_KEY);
     return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 };
 
 const GlassCard = ({ children, className = '' }) => (
@@ -50,9 +45,14 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('result');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
+  // --- DYNAMIC API URL STATE ---
+  const defaultApi = `http://${window.location.hostname}:5000/api`;
+  const [apiUrl, setApiUrl] = useState(() => localStorage.getItem(API_URL_KEY) || defaultApi);
+  const [showConfigQr, setShowConfigQr] = useState(false); // New state to show/hide connection QR
+
   const [accounts, setAccounts] = useState(loadCachedAccounts);
-  const [transactions, setTransactions] = useState([]); // DB Data / Snapshot
-  const [pendingSync, setPendingSync] = useState(loadPending); // Local Offline Data
+  const [transactions, setTransactions] = useState([]); 
+  const [pendingSync, setPendingSync] = useState(loadPending); 
 
   const [isLoading, setIsLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState('');
@@ -87,7 +87,7 @@ export default function App() {
   const scannerRef = useRef(null);
 
   /* ------------------------------------------------------------------ */
-  /* COMBINED TRANSACTIONS (Fix for Instant Mobile Update)              */
+  /* COMBINED TRANSACTIONS                                              */
   /* ------------------------------------------------------------------ */
   const displayTransactions = useMemo(() => {
     const pendingWithFlags = pendingSync.map(t => ({ ...t, id: t.clientId || genId(), isPending: true }));
@@ -100,20 +100,20 @@ export default function App() {
   };
 
   const fetchAccounts = useCallback(async () => {
-    const res = await fetch(`${API_BASE_URL}/accounts`);
+    const res = await fetch(`${apiUrl}/accounts`);
     if (!res.ok) throw new Error('Failed to load accounts');
     const data = await res.json();
     const names = data.map((a) => a.name);
     setAccounts(names);
     localStorage.setItem(ACCOUNTS_CACHE_KEY, JSON.stringify(names));
-  }, []);
+  }, [apiUrl]);
 
   const fetchTransactions = useCallback(async () => {
-    const res = await fetch(`${API_BASE_URL}/transactions`);
+    const res = await fetch(`${apiUrl}/transactions`);
     if (!res.ok) throw new Error('Failed to load transactions');
     const data = await res.json();
     setTransactions(data.map((t) => ({ ...t, id: t._id })));
-  }, []);
+  }, [apiUrl]);
 
   const loadAllData = useCallback(async () => {
     setIsLoading(true);
@@ -136,7 +136,7 @@ export default function App() {
         if (cached) {
           try { setAccounts(JSON.parse(cached)); } catch {}
         }
-        showError('Backend offline — using cached accounts. Entries will save locally.');
+        showError('Backend offline — Entries will save locally in mobile.');
       }
     } finally {
       setIsLoading(false);
@@ -153,7 +153,7 @@ export default function App() {
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 3000);
-        const res = await fetch(`${API_BASE_URL}/health`, { signal: controller.signal });
+        const res = await fetch(`${apiUrl}/health`, { signal: controller.signal });
         clearTimeout(timeout);
         if (!cancelled) setIsOnline(res.ok);
       } catch {
@@ -165,7 +165,7 @@ export default function App() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, []);
+  }, [apiUrl]);
 
   const savePendingSync = (list) => {
     setPendingSync(list);
@@ -183,15 +183,10 @@ export default function App() {
     setChunkIndex(0);
   };
 
-  /* ------------------------------------------------------------------ */
-  /* DERIVED TOTALS (Uses combined displayTransactions)                 */
-  /* ------------------------------------------------------------------ */
-
   const totalRevenue = useMemo(() => displayTransactions.filter(t => t.type === 'revenue').reduce((acc, curr) => acc + curr.amount, 0), [displayTransactions]);
   const totalExpense = useMemo(() => displayTransactions.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amount, 0), [displayTransactions]);
   const availableBalance = totalRevenue - totalExpense;
 
-  // --- RESULT TAB LOGIC ---
   const [filterType, setFilterType] = useState('all');
   const [filterValue, setFilterValue] = useState('');
 
@@ -212,13 +207,7 @@ export default function App() {
       const beforeExpenses = runningBalance + dayData.revenue;
       const afterExpenses = beforeExpenses - dayData.expense;
       runningBalance = afterExpenses; 
-
-      return {
-        ...dayData,
-        beforeExpenses,
-        afterExpenses,
-        status: afterExpenses >= 0 ? 'POSITIVE' : 'NEGATIVE'
-      };
+      return { ...dayData, beforeExpenses, afterExpenses, status: afterExpenses >= 0 ? 'POSITIVE' : 'NEGATIVE' };
     });
 
     let filteredResult = allDatesProcessed;
@@ -236,7 +225,6 @@ export default function App() {
     return filteredResult.sort((a, b) => new Date(b.date) - new Date(a.date));
   }, [displayTransactions, filterType, filterValue]);
 
-  // --- EXPENSE TAB LOGIC ---
   const [expName, setExpName] = useState('');
   const [expAmount, setExpAmount] = useState('');
   const [expMethod, setExpMethod] = useState('');
@@ -246,39 +234,24 @@ export default function App() {
     e.preventDefault();
     if (!expName || !expAmount || !expMethod) return;
 
-    const payload = {
-      type: 'expense',
-      category: expName,
-      amount: parseFloat(expAmount),
-      method: expMethod,
-      date: new Date().toISOString().split('T')[0],
-      clientId: genId(), 
-    };
+    const payload = { type: 'expense', category: expName, amount: parseFloat(expAmount), method: expMethod, date: new Date().toISOString().split('T')[0], clientId: genId() };
 
     if (!isOnline) {
       addPendingEntry(payload);
-      setExpName('');
-      setExpAmount('');
-      return;
+      setExpName(''); setExpAmount(''); return;
     }
 
     setIsSubmitting(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/transactions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+      const res = await fetch(`${apiUrl}/transactions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       if (!res.ok) throw new Error((await res.json()).error || 'Failed to add expense');
       await fetchTransactions();
-      setExpName('');
-      setExpAmount('');
+      setExpName(''); setExpAmount('');
     } catch (err) {
       addPendingEntry(payload);
       setIsOnline(false);
-      showError('Backend unreachable — saved locally. Sync later via QR.');
-      setExpName('');
-      setExpAmount('');
+      showError('Backend unreachable — saved locally. Sync later via Wi-Fi/QR.');
+      setExpName(''); setExpAmount('');
     } finally {
       setIsSubmitting(false);
     }
@@ -288,23 +261,18 @@ export default function App() {
 
   const handleDeleteTransaction = async (id, isPendingItem = false) => {
     if (!window.confirm('Delete this transaction? This cannot be undone.')) return;
-    
     if (isPendingItem) {
       const newPending = pendingSync.filter(t => t.clientId !== id && t.id !== id);
       savePendingSync(newPending);
       return;
     }
-
     try {
-      const res = await fetch(`${API_BASE_URL}/transactions/${id}`, { method: 'DELETE' });
+      const res = await fetch(`${apiUrl}/transactions/${id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error((await res.json()).error || 'Failed to delete transaction');
       await fetchTransactions();
-    } catch (err) {
-      showError(err.message);
-    }
+    } catch (err) { showError(err.message); }
   };
 
-  // --- REVENUE TAB LOGIC ---
   const [revAmount, setRevAmount] = useState('');
   const [revMethod, setRevMethod] = useState('');
   const [revFilterType, setRevFilterType] = useState('all');
@@ -314,35 +282,23 @@ export default function App() {
     e.preventDefault();
     if (!revAmount || !revMethod) return;
 
-    const payload = {
-      type: 'revenue',
-      amount: parseFloat(revAmount),
-      method: revMethod,
-      note: 'Added Funds',
-      date: new Date().toISOString().split('T')[0],
-      clientId: genId(),
-    };
+    const payload = { type: 'revenue', amount: parseFloat(revAmount), method: revMethod, note: 'Added Funds', date: new Date().toISOString().split('T')[0], clientId: genId() };
 
     if (!isOnline) {
       addPendingEntry(payload);
-      setRevAmount('');
-      return;
+      setRevAmount(''); return;
     }
 
     setIsSubmitting(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/transactions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+      const res = await fetch(`${apiUrl}/transactions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       if (!res.ok) throw new Error((await res.json()).error || 'Failed to add revenue');
       await fetchTransactions();
       setRevAmount('');
     } catch (err) {
       addPendingEntry(payload);
       setIsOnline(false);
-      showError('Backend unreachable — saved locally. Sync later via QR.');
+      showError('Backend unreachable — saved locally. Sync later via Wi-Fi/QR.');
       setRevAmount('');
     } finally {
       setIsSubmitting(false);
@@ -365,43 +321,25 @@ export default function App() {
 
   const filteredRevenueTotal = filteredRevenues.reduce((acc, curr) => acc + curr.amount, 0);
 
-  // --- ACCOUNT MANAGEMENT LOGIC ---
   const handleCreateAccount = async (e) => {
     e.preventDefault();
     if (!newAccName) return;
     setIsSubmitting(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/accounts`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: newAccName,
-          initialBalance: newAccBal ? Number(newAccBal) : 0,
-        }),
-      });
+      const res = await fetch(`${apiUrl}/accounts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newAccName, initialBalance: newAccBal ? Number(newAccBal) : 0 }) });
       if (!res.ok) throw new Error((await res.json()).error || 'Failed to create account');
       await Promise.all([fetchAccounts(), fetchTransactions()]);
-      setIsModalOpen(false);
-      setNewAccName('');
-      setNewAccBal('');
-    } catch (err) {
-      showError(err.message);
-    } finally {
-      setIsSubmitting(false);
-    }
+      setIsModalOpen(false); setNewAccName(''); setNewAccBal('');
+    } catch (err) { showError(err.message); } finally { setIsSubmitting(false); }
   };
 
   const handleDeleteAccount = async (accountToDelete) => {
     if (!window.confirm(`Are you sure you want to delete ${accountToDelete}?`)) return;
     try {
-      const res = await fetch(`${API_BASE_URL}/accounts/${encodeURIComponent(accountToDelete)}`, {
-        method: 'DELETE',
-      });
+      const res = await fetch(`${apiUrl}/accounts/${encodeURIComponent(accountToDelete)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error((await res.json()).error || 'Failed to delete account');
       await fetchAccounts();
-    } catch (err) {
-      showError(err.message);
-    }
+    } catch (err) { showError(err.message); }
   };
 
   const handleAdjustBalance = async (e) => {
@@ -409,40 +347,24 @@ export default function App() {
     if (!adjustAmount || !adjustModal) return;
     
     const isIncrease = adjustModal.mode === 'increase';
-    const payload = {
-      type: isIncrease ? 'revenue' : 'expense',
-      amount: parseFloat(adjustAmount),
-      method: adjustModal.account,
-      note: isIncrease ? 'Balance Adjustment' : undefined,
-      category: !isIncrease ? 'Balance Adjustment' : undefined,
-      date: new Date().toISOString().split('T')[0],
-      clientId: genId(),
-    };
+    const payload = { type: isIncrease ? 'revenue' : 'expense', amount: parseFloat(adjustAmount), method: adjustModal.account, note: isIncrease ? 'Balance Adjustment' : undefined, category: !isIncrease ? 'Balance Adjustment' : undefined, date: new Date().toISOString().split('T')[0], clientId: genId() };
 
     if (!isOnline) {
       addPendingEntry(payload);
-      setAdjustModal(null);
-      setAdjustAmount('');
-      return;
+      setAdjustModal(null); setAdjustAmount(''); return;
     }
 
     setIsSubmitting(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/transactions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+      const res = await fetch(`${apiUrl}/transactions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       if (!res.ok) throw new Error((await res.json()).error || 'Failed to adjust balance');
       await fetchTransactions();
-      setAdjustModal(null);
-      setAdjustAmount('');
+      setAdjustModal(null); setAdjustAmount('');
     } catch (err) {
       addPendingEntry(payload);
       setIsOnline(false);
-      showError('Backend unreachable — saved locally. Sync later via QR.');
-      setAdjustModal(null);
-      setAdjustAmount('');
+      showError('Backend unreachable — saved locally. Sync later via Wi-Fi/QR.');
+      setAdjustModal(null); setAdjustAmount('');
     } finally {
       setIsSubmitting(false);
     }
@@ -468,52 +390,33 @@ export default function App() {
   const qrChunks = useMemo(() => {
     if (pendingSync.length === 0) return [];
     const chunks = [];
-    for (let i = 0; i < pendingSync.length; i += QR_CHUNK_SIZE) {
-      chunks.push(pendingSync.slice(i, i + QR_CHUNK_SIZE));
-    }
-    return chunks.map((items, idx) => ({
-      app: 'xtracker-sync',
-      chunkIndex: idx,
-      totalChunks: chunks.length,
-      items,
-    }));
+    for (let i = 0; i < pendingSync.length; i += QR_CHUNK_SIZE) { chunks.push(pendingSync.slice(i, i + QR_CHUNK_SIZE)); }
+    return chunks.map((items, idx) => ({ app: 'xtracker-sync', chunkIndex: idx, totalChunks: chunks.length, items }));
   }, [pendingSync]);
 
-  useEffect(() => {
-    if (chunkIndex >= qrChunks.length) setChunkIndex(0);
-  }, [qrChunks, chunkIndex]);
-
+  useEffect(() => { if (chunkIndex >= qrChunks.length) setChunkIndex(0); }, [qrChunks, chunkIndex]);
   const currentQrPayload = qrChunks[chunkIndex] ? JSON.stringify(qrChunks[chunkIndex]) : '';
 
   const snapshotChunks = useMemo(() => {
     if (transactions.length === 0) return [];
     const chunks = [];
-    for (let i = 0; i < transactions.length; i += SNAPSHOT_CHUNK_SIZE) {
-      chunks.push(transactions.slice(i, i + SNAPSHOT_CHUNK_SIZE));
-    }
-    return chunks.map((items, idx) => ({
-      app: 'xtracker-snapshot',
-      chunkIndex: idx,
-      totalChunks: chunks.length,
-      accounts, 
-      items,
-    }));
+    for (let i = 0; i < transactions.length; i += SNAPSHOT_CHUNK_SIZE) { chunks.push(transactions.slice(i, i + SNAPSHOT_CHUNK_SIZE)); }
+    return chunks.map((items, idx) => ({ app: 'xtracker-snapshot', chunkIndex: idx, totalChunks: chunks.length, accounts, items }));
   }, [transactions, accounts]);
 
-  useEffect(() => {
-    if (snapshotChunkIndex >= snapshotChunks.length) setSnapshotChunkIndex(0);
-  }, [snapshotChunks, snapshotChunkIndex]);
+  useEffect(() => { if (snapshotChunkIndex >= snapshotChunks.length) setSnapshotChunkIndex(0); }, [snapshotChunks, snapshotChunkIndex]);
+  const currentSnapshotQrPayload = snapshotChunks[snapshotChunkIndex] ? JSON.stringify(snapshotChunks[snapshotChunkIndex]) : '';
 
-  const currentSnapshotQrPayload = snapshotChunks[snapshotChunkIndex]
-    ? JSON.stringify(snapshotChunks[snapshotChunkIndex])
-    : '';
+  const handleSaveApiUrl = (newUrl) => {
+    setApiUrl(newUrl);
+    localStorage.setItem(API_URL_KEY, newUrl);
+    showError("Backend API URL Updated & Saved!");
+    setShowConfigQr(false);
+  };
 
   const stopScanner = useCallback(async () => {
     if (scannerRef.current) {
-      try {
-        await scannerRef.current.stop();
-        scannerRef.current.clear();
-      } catch {}
+      try { await scannerRef.current.stop(); scannerRef.current.clear(); } catch {}
       scannerRef.current = null;
     }
     setIsScannerOpen(false);
@@ -524,10 +427,15 @@ export default function App() {
     try { payload = JSON.parse(decodedText); } 
     catch { setScanMessage('⚠️ That QR code is not an X-Tracker code.'); return; }
 
-    if (!payload || !Array.isArray(payload.items)) {
-      setScanMessage('⚠️ That QR code is not an X-Tracker code.');
+    // Check if it's the IP Configuration QR code
+    if (payload.app === 'xtracker-config' && payload.apiUrl) {
+      handleSaveApiUrl(payload.apiUrl);
+      setScanMessage(`✅ API URL Updated to: ${payload.apiUrl}`);
+      setTimeout(() => stopScanner(), 1000);
       return;
     }
+
+    if (!payload || !Array.isArray(payload.items)) { setScanMessage('⚠️ That QR code is not an X-Tracker code.'); return; }
 
     if (payload.app === 'xtracker-sync') {
       setExpectedChunkTotal(payload.totalChunks);
@@ -543,28 +451,17 @@ export default function App() {
       setScanMessage(`✅ Data snapshot page ${payload.chunkIndex + 1} of ${payload.totalChunks} scanned`);
       return;
     }
-
     setScanMessage('⚠️ That QR code is not an X-Tracker code.');
-  }, []);
+  }, [stopScanner]);
 
-  // Updated Scanner Config: Full screen without box + higher FPS
   const startScanner = useCallback(async () => {
-    setScanMessage('');
-    setIsScannerOpen(true);
+    setScanMessage(''); setIsScannerOpen(true);
     setTimeout(async () => {
       try {
         const scanner = new Html5Qrcode(QR_SCANNER_ELEMENT_ID);
         scannerRef.current = scanner;
-        await scanner.start(
-          { facingMode: 'environment' }, 
-          { fps: 15 }, // Removed qrbox, increased FPS for better detection
-          (decodedText) => handleDecodedText(decodedText),
-          () => {} 
-        );
-      } catch (err) {
-        showError('Could not access camera: ' + err.message);
-        setIsScannerOpen(false);
-      }
+        await scanner.start({ facingMode: 'environment' }, { fps: 15 }, (decodedText) => handleDecodedText(decodedText), () => {});
+      } catch (err) { showError('Could not access camera: ' + err.message); setIsScannerOpen(false); }
     }, 500); 
   }, [handleDecodedText]);
 
@@ -578,68 +475,39 @@ export default function App() {
     if (items.length === 0) return;
     setIsImporting(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/transactions/bulk`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items }),
-      });
+      const res = await fetch(`${apiUrl}/transactions/bulk`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }) });
       if (!res.ok) throw new Error((await res.json()).error || 'Failed to import scanned entries');
       const result = await res.json();
       await fetchTransactions();
-      setReceivedChunks({});
-      setExpectedChunkTotal(null);
+      setReceivedChunks({}); setExpectedChunkTotal(null);
       setScanMessage(`🎉 Imported ${result.insertedCount} entries${result.skippedCount ? `, skipped ${result.skippedCount} duplicate(s)` : ''}.`);
       await stopScanner();
-    } catch (err) {
-      showError(err.message);
-    } finally {
-      setIsImporting(false);
-    }
+    } catch (err) { showError(err.message); } finally { setIsImporting(false); }
   };
 
-  // --- DIRECT WI-FI SYNC FUNCTION ---
   const handleNetworkSync = async () => {
     if (pendingSync.length === 0) return;
-    
-    if (!isOnline) {
-      showError("Backend offline la irukku. Mobile-um Laptop-um same Wi-Fi la irukka nu check pannunga.");
-      return;
-    }
-
+    if (!isOnline) { showError("Backend offline. Setup your URL in settings or connect to the right network."); return; }
     setIsImporting(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/transactions/bulk`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: pendingSync }),
-      });
-      
+      const res = await fetch(`${apiUrl}/transactions/bulk`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items: pendingSync }) });
       if (!res.ok) throw new Error((await res.json()).error || 'Failed to sync via Wi-Fi');
-      
       const result = await res.json();
       await fetchTransactions(); 
       savePendingSync([]); 
       setChunkIndex(0);
-      
-      showError(`🎉 Success! ${result.insertedCount} entries synced directly via Wi-Fi.`);
-    } catch (err) {
-      showError(err.message);
-    } finally {
-      setIsImporting(false);
-    }
+      showError(`🎉 Success! ${result.insertedCount} entries synced directly via Network.`);
+    } catch (err) { showError(err.message); } finally { setIsImporting(false); }
   };
 
   const handleSaveSnapshotLocally = () => {
     const items = Object.values(receivedSnapshotChunks).flat();
     const snapshot = { accounts: receivedSnapshotAccounts, transactions: items, syncedAt: new Date().toISOString() };
     localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(snapshot));
-    setAccounts(receivedSnapshotAccounts);
-    setTransactions(items);
+    setAccounts(receivedSnapshotAccounts); setTransactions(items);
     setLastSnapshotSyncedAt(snapshot.syncedAt);
-    setReceivedSnapshotChunks({});
-    setExpectedSnapshotChunkTotal(null);
-    setReceivedSnapshotAccounts([]);
-    setScanMessage(`🎉 Saved ${items.length} entries for offline viewing on this device.`);
+    setReceivedSnapshotChunks({}); setExpectedSnapshotChunkTotal(null); setReceivedSnapshotAccounts([]);
+    setScanMessage(`🎉 Saved ${items.length} entries for offline viewing.`);
   };
 
   const receivedChunkCount = Object.keys(receivedChunks).length;
@@ -647,7 +515,6 @@ export default function App() {
   const receivedSnapshotChunkCount = Object.keys(receivedSnapshotChunks).length;
   const receivedSnapshotItemCount = Object.values(receivedSnapshotChunks).reduce((sum, arr) => sum + arr.length, 0);
   const isSnapshotComplete = expectedSnapshotChunkTotal !== null && receivedSnapshotChunkCount === expectedSnapshotChunkTotal;
-
 
   if (isLoading) {
     return (
@@ -712,7 +579,7 @@ export default function App() {
             <DollarSign size={20} className={`transition-transform duration-300 ${activeTab === 'revenue' ? 'scale-110' : ''}`} /> {isSidebarOpen && <span className="font-semibold tracking-wide">Revenue</span>}
           </button>
           <button onClick={() => setActiveTab('sync')} className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-300 ease-out active:scale-95 relative ${activeTab === 'sync' ? 'bg-gradient-to-r from-violet-500 to-fuchsia-500 text-white shadow-[0_0_20px_rgba(168,85,247,0.3)] scale-[1.02]' : 'text-slate-400 hover:bg-white/5 hover:text-white hover:translate-x-1'}`}>
-            <QrCode size={20} className={`transition-transform duration-300 ${activeTab === 'sync' ? 'scale-110' : ''}`} /> {isSidebarOpen && <span className="font-semibold tracking-wide">QR Sync</span>}
+            <QrCode size={20} className={`transition-transform duration-300 ${activeTab === 'sync' ? 'scale-110' : ''}`} /> {isSidebarOpen && <span className="font-semibold tracking-wide">Data Sync</span>}
             {pendingSync.length > 0 && (
               <span className={`${isSidebarOpen ? 'ml-auto' : 'absolute -top-1 -right-1'} min-w-[18px] h-[18px] px-1 rounded-full bg-amber-400 text-[10px] font-black text-slate-900 flex items-center justify-center`}>
                 {pendingSync.length}
@@ -758,7 +625,7 @@ export default function App() {
       {/* MAIN CONTENT AREA */}
       <main className="flex-1 flex flex-col h-screen overflow-hidden z-10">
         <header className="h-16 md:h-20 bg-slate-900/20 backdrop-blur-md border-b border-white/5 flex items-center px-4 md:px-10 justify-between shrink-0">
-          <h2 className="text-xl md:text-2xl font-bold text-white capitalize tracking-wide">{activeTab === 'sync' ? 'QR Sync' : activeTab}</h2>
+          <h2 className="text-xl md:text-2xl font-bold text-white capitalize tracking-wide">{activeTab === 'sync' ? 'Data Sync' : activeTab}</h2>
           <div className="flex items-center gap-2 md:gap-4 bg-slate-800/50 px-3 md:px-5 py-1.5 md:py-2.5 rounded-full border border-white/10 shadow-lg">
             <Wallet size={16} className="text-cyan-400 md:w-[18px] md:h-[18px]" />
             <span className="hidden md:inline text-sm text-slate-400 font-medium uppercase tracking-wider">Net Balance</span>
@@ -1080,16 +947,52 @@ export default function App() {
             </div>
           )}
 
-         {/* --- QR SYNC TAB --- */}
+          {/* --- QR SYNC TAB --- */}
           {activeTab === 'sync' && (
             <div className="max-w-6xl mx-auto space-y-6 md:space-y-8 animate-in fade-in duration-500 slide-in-from-bottom-4">
 
-              <GlassCard className="border-t-4 border-t-violet-500">
-                <p className="text-slate-300 text-xs md:text-sm leading-relaxed">
-                  Two things happen here. Use <span className="text-white font-bold">Phone to Laptop</span> to send offline-added expenses/revenue to the laptop. 
-                  Use <span className="text-white font-bold">Laptop to Phone</span> to pull the current DB data to your phone so it can be viewed offline.
-                  If both devices are on the same Wi-Fi, simply use the <span className="text-white font-bold">Same Network Sync</span> buttons!
-                </p>
+              {/* SETTINGS CARD FOR NETLIFY USERS */}
+              <GlassCard className="border-t-4 border-t-slate-500">
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                  <div className="w-full md:w-auto">
+                    <h3 className="text-base md:text-lg font-bold text-white flex items-center gap-2">
+                      <Settings size={20} className="text-slate-400"/> Connection Settings
+                    </h3>
+                    <p className="text-xs md:text-sm text-slate-400 mt-1">Set Backend API URL. Laptop users: Generate QR. Mobile users: Scan to connect.</p>
+                  </div>
+                  <div className="flex flex-col w-full md:w-auto gap-3">
+                    <div className="flex flex-col sm:flex-row w-full gap-2">
+                      <input 
+                        type="text" 
+                        className="p-2.5 md:p-3 bg-slate-900 border border-slate-700 rounded-xl outline-none text-slate-200 text-xs md:text-sm w-full md:w-64 focus:border-cyan-400" 
+                        value={apiUrl} 
+                        onChange={(e) => setApiUrl(e.target.value)} 
+                        placeholder="http://192.168.1.x:5000/api"
+                      />
+                      <button 
+                        onClick={() => handleSaveApiUrl(apiUrl)}
+                        className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl font-bold transition-all text-xs md:text-sm border border-white/5 whitespace-nowrap"
+                      >
+                        Save
+                      </button>
+                    </div>
+                    <button 
+                      onClick={() => setShowConfigQr(!showConfigQr)} 
+                      className="w-full py-2.5 bg-indigo-500/20 text-indigo-400 rounded-xl font-bold text-xs md:text-sm border border-indigo-500/30 hover:bg-indigo-500/30 transition-all"
+                    >
+                      {showConfigQr ? 'Hide QR' : 'Show Connection QR'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* SHOW THE CONFIG QR ON LAPTOP */}
+                {showConfigQr && (
+                  <div className="mt-6 flex flex-col items-center justify-center p-6 bg-white rounded-2xl w-fit mx-auto shadow-[0_0_30px_rgba(99,102,241,0.3)] animate-in fade-in zoom-in-95">
+                    <QRCodeSVG value={JSON.stringify({app: 'xtracker-config', apiUrl: apiUrl})} size={220} />
+                    <p className="text-slate-800 text-xs md:text-sm font-bold mt-4 uppercase tracking-wider">Scan this from Mobile</p>
+                    <p className="text-slate-500 text-[10px] md:text-xs font-medium text-center mt-1">To automatically set the API URL</p>
+                  </div>
+                )}
               </GlassCard>
 
               <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 md:gap-8 items-start">
@@ -1143,7 +1046,7 @@ export default function App() {
                     
                     {!isOnline && pendingSync.length > 0 && (
                       <p className="text-[10px] text-amber-400 text-center">
-                        Connect your phone to the laptop's Wi-Fi network to use direct sync.
+                        Connect to laptop's Wi-Fi network and check Connection Settings above.
                       </p>
                     )}
 
